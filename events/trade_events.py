@@ -16,6 +16,9 @@ class RhDefinedVerticalEvent:
     max_fill_seconds: Optional[int] = None  # max time to wait for fill, then cancel
     take_profit: Optional[float] = None  # optional target spread price to close for profit
     stop_loss: Optional[float] = None    # optional target spread price to close for loss
+    # Underlying-based exit thresholds
+    underlying_take_profit: Optional[float] = None  # exit if underlying >= this
+    underlying_stop_loss: Optional[float] = None    # exit if underlying <= this
     exit_before_close: bool = False      # exit near market close if still open
     eod_minutes_before: int = 10         # how many minutes before close to attempt exit
 

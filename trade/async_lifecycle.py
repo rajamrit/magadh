@@ -152,7 +152,7 @@ class AsyncTradeLifecycle:
         try:
             legs_str = f"{legs[0]['action']}/{legs[0]['optionType']}@{legs[0]['strike']} + {legs[1]['action']}/{legs[1]['optionType']}@{legs[1]['strike']}"
             PushoverMessageHandle.send_msg(msg=(
-                f"🚀 Trade Entry Submitted\norder={order_id} symbol={event.symbol} dir={event.position_effect} qty={event.quantity} price={event.price}\nexp={event.expiration_date} legs={legs_str} tp={event.take_profit} sl={event.stop_loss} eod={event.exit_before_close}/{event.eod_minutes_before}m"
+                f"🚀 Trade Entry Submitted\norder={order_id} symbol={event.symbol} dir={event.position_effect} qty={event.quantity} price={event.price}\nexp={event.expiration_date} legs={legs_str} tp={event.take_profit} sl={event.stop_loss} utp={event.underlying_take_profit} usl={event.underlying_stop_loss} eod={event.exit_before_close}/{event.eod_minutes_before}m"
             ))
         except Exception:
             pass

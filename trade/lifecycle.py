@@ -144,6 +144,8 @@ class TradeLifecycleManager:
                 take_profit=event.take_profit,
                 stop_loss=event.stop_loss,
                 callback=on_target,
+                underlying_take_profit=event.underlying_take_profit,
+                underlying_stop_loss=event.underlying_stop_loss,
             )
 
         # EOD exit handling
@@ -246,7 +248,7 @@ class TradeLifecycleManager:
                 f"order={order_id}\n"
                 f"symbol={event.symbol} dir={event.position_effect} qty={event.quantity} price={event.price}\n"
                 f"exp={event.expiration_date} legs={legs_str}\n"
-                f"tp={event.take_profit} sl={event.stop_loss} eod={event.exit_before_close}/{event.eod_minutes_before}m"
+                f"tp={event.take_profit} sl={event.stop_loss} utp={event.underlying_take_profit} usl={event.underlying_stop_loss} eod={event.exit_before_close}/{event.eod_minutes_before}m"
             ))
         except Exception:
             pass
@@ -254,3 +256,64 @@ class TradeLifecycleManager:
         t = threading.Thread(target=self._monitor_fill_and_targets, args=(event, order_id), daemon=True)
         t.start()
         return result 
+
+    def eod_exit_all(self):
+        try:
+            for path, state in self.store.iter_states():
+                order_id = state.get("order_id") or os.path.splitext(os.path.basename(path))[0]
+                status = self.store.get_status(state)
+                # Cancel any still-submitted entries
+                if status == "submitted":
+                    try:
+                        self.rh.cancel_order(order_id)
+                        self.store.record_cancel(order_id, reason="eod_cancel")
+                        try:
+                            PushoverMessageHandle.send_msg(msg=f"🛑 EOD Cancel entry order={order_id}")
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.error(f"EOD cancel failed for {order_id}: {e}")
+                    continue
+                # For open trades, place an aggressive close
+                if status == "open":
+                    # reconstruct event from history for legs and direction
+                    evt_dict = None
+                    for h in state.get("history", []):
+                        if h.get("type") == "created":
+                            evt_dict = h.get("payload", {}).get("event")
+                            break
+                    if not isinstance(evt_dict, dict):
+                        continue
+                    try:
+                        evt = RhDefinedVerticalEvent(**evt_dict)
+                        close_legs = self._build_spread_legs(evt, effect="close")
+                        entry_price = state.get("price")
+                        adj = 0.05
+                        if evt.position_effect == "debit" and entry_price is not None:
+                            exit_price = max(0.01, float(entry_price) - adj)
+                        elif evt.position_effect == "credit" and entry_price is not None:
+                            exit_price = float(entry_price) - adj
+                        else:
+                            exit_price = 0.01
+                        logger.info(f"EOD force-exit {order_id} at {exit_price} legs={close_legs}")
+                        try:
+                            PushoverMessageHandle.send_msg(msg=(
+                                f"🏁 EOD Forced Exit\norder={order_id} symbol={evt.symbol} price={exit_price}"
+                            ))
+                        except Exception:
+                            pass
+                        # NOTE: This assumes the order API supports effect='close' in legs
+                        result = self.rh.order_vertical_spread(
+                            direction=evt.position_effect,
+                            symbol=evt.symbol,
+                            price=exit_price,
+                            legs=close_legs,
+                            quantity=state.get("quantity", 1),
+                            time_in_force="gfd",
+                        )
+                        if isinstance(result, dict):
+                            self.store.record_fill(order_id, kind="exit", details=result)
+                    except Exception as e:
+                        logger.error(f"EOD force-exit failed for {order_id}: {e}")
+        except Exception as e:
+            logger.error(f"EOD batch exit error: {e}") 

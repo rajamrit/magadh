@@ -33,6 +33,8 @@ def build_args(argv=None):
     parser.add_argument("--submit-time", type=str, default=None, help="Override submit time, default now")
     parser.add_argument("--exit-before-close", action="store_true", help="Auto-exit near market close if still open")
     parser.add_argument("--eod-minutes-before", type=int, default=10, help="Minutes before close to attempt exit (default 10)")
+    parser.add_argument("--underlying-take-profit", type=float, default=None, help="Exit if underlying >= this price")
+    parser.add_argument("--underlying-stop-loss", type=float, default=None, help="Exit if underlying <= this price")
     return parser.parse_args(argv)
 
 
@@ -53,6 +55,8 @@ def main(argv=None) -> int:
         "max_fill_seconds": args.max_fill_seconds,
         "take_profit": args.take_profit,
         "stop_loss": args.stop_loss,
+        "underlying_take_profit": args.underlying_take_profit,
+        "underlying_stop_loss": args.underlying_stop_loss,
         "exit_before_close": args.exit_before_close,
         "eod_minutes_before": args.eod_minutes_before,
     }
