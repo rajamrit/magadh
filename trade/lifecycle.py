@@ -123,7 +123,7 @@ class TradeLifecycleManager:
             time.sleep(2)
 
         # Register for targets if provided
-        if event.take_profit is not None or event.stop_loss is not None:
+        if event.take_profit is not None or event.stop_loss is not None or event.underlying_take_profit is not None or event.underlying_stop_loss is not None:
             def on_target(order_id: str, reason: str, price: float):
                 logger.info(f"Exit trigger for {order_id}: {reason} at {price}")
                 try:
@@ -138,6 +138,11 @@ class TradeLifecycleManager:
                 except Exception as e:
                     logger.error(f"Exit placement failed for {order_id}: {e}")
 
+            short_leg = event.primary_leg if str(event.primary_leg.get("buy_sell")).lower() == "sell" else event.secondary_leg
+            is_credit = (event.position_effect == "credit")
+            short_type = str(short_leg.get("option_type")).lower() if short_leg else None
+            short_strike = float(short_leg.get("strike_price")) if short_leg and short_leg.get("strike_price") is not None else None
+
             self.price_tracker.watch_order(
                 order_id=order_id,
                 symbol=event.symbol,
@@ -146,6 +151,10 @@ class TradeLifecycleManager:
                 callback=on_target,
                 underlying_take_profit=event.underlying_take_profit,
                 underlying_stop_loss=event.underlying_stop_loss,
+                is_credit=is_credit,
+                short_leg_type=short_type,
+                short_leg_strike=short_strike,
+                expiration_date=event.expiration_date,
             )
 
         # EOD exit handling
@@ -274,9 +283,8 @@ class TradeLifecycleManager:
                     except Exception as e:
                         logger.error(f"EOD cancel failed for {order_id}: {e}")
                     continue
-                # For open trades, place an aggressive close
+                # For open trades, place an aggressive close with adjustments
                 if status == "open":
-                    # reconstruct event from history for legs and direction
                     evt_dict = None
                     for h in state.get("history", []):
                         if h.get("type") == "created":
@@ -288,31 +296,65 @@ class TradeLifecycleManager:
                         evt = RhDefinedVerticalEvent(**evt_dict)
                         close_legs = self._build_spread_legs(evt, effect="close")
                         entry_price = state.get("price")
-                        adj = 0.05
+                        step = getattr(self.settings, 'eod_price_step', 0.05)
+                        interval = getattr(self.settings, 'eod_adjust_interval_sec', 60)
+                        max_adj = getattr(self.settings, 'eod_max_adjusts', 5)
+                        # initial exit price
                         if evt.position_effect == "debit" and entry_price is not None:
-                            exit_price = max(0.01, float(entry_price) - adj)
+                            price = max(0.01, float(entry_price) - step)
+                            def next_price(p):
+                                return max(0.01, p - step)
                         elif evt.position_effect == "credit" and entry_price is not None:
-                            exit_price = float(entry_price) - adj
+                            price = float(entry_price) - step
+                            def next_price(p):
+                                return p - step
                         else:
-                            exit_price = 0.01
-                        logger.info(f"EOD force-exit {order_id} at {exit_price} legs={close_legs}")
-                        try:
-                            PushoverMessageHandle.send_msg(msg=(
-                                f"🏁 EOD Forced Exit\norder={order_id} symbol={evt.symbol} price={exit_price}"
-                            ))
-                        except Exception:
-                            pass
-                        # NOTE: This assumes the order API supports effect='close' in legs
-                        result = self.rh.order_vertical_spread(
-                            direction=evt.position_effect,
-                            symbol=evt.symbol,
-                            price=exit_price,
-                            legs=close_legs,
-                            quantity=state.get("quantity", 1),
-                            time_in_force="gfd",
-                        )
-                        if isinstance(result, dict):
-                            self.store.record_fill(order_id, kind="exit", details=result)
+                            price = 0.01
+                            def next_price(p):
+                                return p  # no change if unknown
+                        attempt = 0
+                        while attempt <= max_adj:
+                            attempt += 1
+                            logger.info(f"EOD exit attempt {attempt} for {order_id} @ {price}")
+                            try:
+                                PushoverMessageHandle.send_msg(msg=f"↕️ EOD Adjust {attempt} order={order_id} price={price}")
+                            except Exception:
+                                pass
+                            try:
+                                result = self.rh.order_vertical_spread(
+                                    direction=evt.position_effect,
+                                    symbol=evt.symbol,
+                                    price=price,
+                                    legs=close_legs,
+                                    quantity=state.get("quantity", 1),
+                                    time_in_force="gfd",
+                                )
+                            except Exception as e:
+                                logger.error(f"EOD place exit failed for {order_id}: {e}")
+                                break
+                            # Poll briefly for fill
+                            deadline = time.time() + interval
+                            filled = False
+                            while time.time() < deadline:
+                                details = self.rh.get_order_details(order_id)
+                                if isinstance(details, dict) and details.get("state") == "filled":
+                                    self.store.record_fill(order_id, kind="exit", details=details)
+                                    filled = True
+                                    break
+                                time.sleep(2)
+                            if filled:
+                                try:
+                                    PushoverMessageHandle.send_msg(msg=f"✅ EOD Exit Filled order={order_id} price={price}")
+                                except Exception:
+                                    pass
+                                break
+                            # Not filled: try cancelling and adjust price
+                            try:
+                                self.rh.cancel_order(order_id)
+                                self.store.record_cancel(order_id, reason="eod_adjust_replace")
+                            except Exception:
+                                pass
+                            price = next_price(price)
                     except Exception as e:
                         logger.error(f"EOD force-exit failed for {order_id}: {e}")
         except Exception as e:

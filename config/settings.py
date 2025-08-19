@@ -26,6 +26,9 @@ class AppSettings:
     robinhood: RobinhoodSettings
     ignore_older_minutes: int = 5
     max_trades_per_symbol_per_day: int = 3
+    eod_adjust_interval_sec: int = 60
+    eod_max_adjusts: int = 5
+    eod_price_step: float = 0.05
 
 
 def load_settings() -> AppSettings:
@@ -47,6 +50,9 @@ def load_settings() -> AppSettings:
 
     ignore_older_minutes = int(os.getenv("IGNORE_OLDER_MINUTES", "5"))
     max_trades_per_symbol_per_day = int(os.getenv("MAX_TRADES_PER_SYMBOL_PER_DAY", "3"))
+    eod_adjust_interval_sec = int(os.getenv("EOD_ADJUST_INTERVAL_SEC", "60"))
+    eod_max_adjusts = int(os.getenv("EOD_MAX_ADJUSTS", "5"))
+    eod_price_step = float(os.getenv("EOD_PRICE_STEP", "0.05"))
 
     return AppSettings(
         kafka=KafkaSettings(
@@ -64,4 +70,7 @@ def load_settings() -> AppSettings:
         ),
         ignore_older_minutes=ignore_older_minutes,
         max_trades_per_symbol_per_day=max_trades_per_symbol_per_day,
+        eod_adjust_interval_sec=eod_adjust_interval_sec,
+        eod_max_adjusts=eod_max_adjusts,
+        eod_price_step=eod_price_step,
     ) 
