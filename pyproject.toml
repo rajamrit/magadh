@@ -1,0 +1,17 @@
+[project]
+name = "magadh"
+version = "0.1.0"
+description = "Robinhood trading bot consuming Kafka events"
+authors = [{ name = "ramrit" }]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "confluent-kafka>=2.3.0",
+  "aiokafka>=0.10.0",
+  "pandas>=2.2.0",
+  "robin-stocks>=2.2.0",
+  "pytz>=2024.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."} 
