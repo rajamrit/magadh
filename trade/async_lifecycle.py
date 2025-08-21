@@ -10,6 +10,7 @@ from magadh.services.robinhood_service import RobinhoodService
 from magadh.services.mock_robinhood_service import MockRobinhoodService
 from magadh.trade.storage import TradeStateStore
 from magadh.trade.price_tracker import PriceTracker
+import os
 
 
 logger = Util.get_logger("MagadhAsyncLifecycle")
@@ -39,10 +40,28 @@ class AsyncTradeLifecycle:
 
     async def _monitor_fill_and_targets(self, event: RhDefinedVerticalEvent, order_id: str):
         deadline = time.time() + (event.max_fill_seconds or 0)
+        poll_interval = float(os.environ.get("MAGADH_FILL_POLL_INTERVAL_SEC", "1.5"))
+        prev_state: Optional[str] = None
+        prev_filled_qty: Optional[float] = None
         while True:
             details = self.rh.get_order_details(order_id)
-            self.store.record_order_snapshot(order_id, details or {})
             state = details.get("state") if isinstance(details, dict) else None
+            # derive filled qty if present (fallbacks for mock)
+            try:
+                filled_qty = float(details.get("filled_quantity", 0.0)) if isinstance(details, dict) else None
+            except Exception:
+                filled_qty = None
+            if filled_qty is None and isinstance(details, dict):
+                if state == "filled":
+                    try:
+                        filled_qty = float(details.get("quantity", 0.0))
+                    except Exception:
+                        filled_qty = None
+            # record snapshot only on change
+            if (state != prev_state) or (filled_qty != prev_filled_qty):
+                self.store.record_order_snapshot(order_id, details or {})
+                prev_state = state
+                prev_filled_qty = filled_qty
             if state == "filled":
                 self.store.record_fill(order_id, kind="entry", details=details)
                 try:
@@ -60,7 +79,7 @@ class AsyncTradeLifecycle:
                 except Exception as e:
                     logger.error(f"Cancel failed for {order_id}: {e}")
                 return
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(poll_interval)
 
     async def _eod_exit(self, event: RhDefinedVerticalEvent, order_id: str):
         if not event.exit_before_close:
