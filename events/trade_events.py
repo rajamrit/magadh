@@ -21,6 +21,13 @@ class RhDefinedVerticalEvent:
     underlying_stop_loss: Optional[float] = None    # exit if underlying <= this
     exit_before_close: bool = False      # exit near market close if still open
     eod_minutes_before: int = 10         # how many minutes before close to attempt exit
+    # Auto roll on challenge
+    auto_roll_on_challenge: bool = False
+    roll_short_strike_shift: float = 1.0
+    roll_keep_width: bool = True
+    roll_credit_factor: float = 0.5
+    roll_trigger_pct: float = 0.0  # percent beyond short strike to auto-roll (alerts still fire at breach)
+    roll_dependent: Optional[Dict[str, object]] = None  # optional explicit new spread dict {expiration_date, primary_leg, secondary_leg, price}
 
     def __post_init__(self):
         if isinstance(self.submit_time, str):
