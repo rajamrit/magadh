@@ -4,6 +4,8 @@ import time
 import re
 import glob
 from typing import Any, Dict, Optional
+from datetime import datetime
+import pytz
 
 from tpe_common.util.util import Util
 
@@ -12,11 +14,18 @@ logger = Util.get_logger("MagadhStorage")
 
 class TradeStateStore:
     def __init__(self, base_dir: str | None = None):
-        self.base_dir = base_dir or os.path.expanduser("~/.magadh/trades")
+        default_dir = "/Users/ramrit/magadh/trades"
+        env_dir = os.environ.get("MAGADH_TRADES_DIR")
+        self.base_dir = base_dir or env_dir or default_dir
         os.makedirs(self.base_dir, exist_ok=True)
         # append-only logs dir
         self.logs_dir = os.path.join(self.base_dir, "trader")
         os.makedirs(self.logs_dir, exist_ok=True)
+
+    @staticmethod
+    def _now_iso_pacific() -> str:
+        tz = pytz.timezone("US/Pacific")
+        return datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S")
 
     def iter_states(self):
         for path in glob.glob(os.path.join(self.base_dir, "*.json")):
@@ -98,7 +107,7 @@ class TradeStateStore:
                       price: float, quantity: int, legs: list, targets: Dict[str, Optional[float]],
                       event: Dict[str, Any]) -> str:
         now_epoch = time.time()
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now_epoch))
+        now_iso = self._now_iso_pacific()
         state: Dict[str, Any] = {
             "order_id": order_id,
             "name": name,
@@ -128,7 +137,7 @@ class TradeStateStore:
         state = self.load(order_id) or {}
         hist = state.setdefault("history", [])
         now_epoch = time.time()
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now_epoch))
+        now_iso = self._now_iso_pacific()
         hist.append({"ts": now_epoch, "ts_iso": now_iso, "type": "order_snapshot", "payload": snapshot})
         self._write(order_id, state)
         status = snapshot.get("state") if isinstance(snapshot, dict) else None
@@ -140,7 +149,7 @@ class TradeStateStore:
         state = self.load(order_id) or {}
         fills = state.setdefault("fills", [])
         now_epoch = time.time()
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now_epoch))
+        now_iso = self._now_iso_pacific()
         fills.append({"ts": now_epoch, "ts_iso": now_iso, "kind": kind, "details": details})
         if kind == "entry":
             state["status"] = "open"
@@ -159,7 +168,7 @@ class TradeStateStore:
             targets["stop_loss"] = stop_loss
         hist = state.setdefault("history", [])
         now_epoch = time.time()
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now_epoch))
+        now_iso = self._now_iso_pacific()
         hist.append({
             "ts": now_epoch,
             "ts_iso": now_iso,
@@ -177,7 +186,7 @@ class TradeStateStore:
     def record_cancel(self, order_id: str, reason: str | None = None) -> None:
         state = self.load(order_id) or {}
         now_epoch = time.time()
-        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now_epoch))
+        now_iso = self._now_iso_pacific()
         hist = state.setdefault("history", [])
         hist.append({"ts": now_epoch, "ts_iso": now_iso, "type": "cancelled", "payload": {"reason": reason}})
         state["status"] = "cancelled"
