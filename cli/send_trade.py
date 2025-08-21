@@ -35,11 +35,19 @@ def build_args(argv=None):
     parser.add_argument("--eod-minutes-before", type=int, default=10, help="Minutes before close to attempt exit (default 10)")
     parser.add_argument("--underlying-take-profit", type=float, default=None, help="Exit if underlying >= this price")
     parser.add_argument("--underlying-stop-loss", type=float, default=None, help="Exit if underlying <= this price")
+    parser.add_argument("--auto-roll-on-challenge", action="store_true", help="Auto close and roll challenged credit spreads")
+    parser.add_argument("--roll-short-strike-shift", type=float, default=1.0, help="Shift for new short strike (abs value)")
+    parser.add_argument("--roll-keep-width", action="store_true", help="Keep same spread width on roll")
+    parser.add_argument("--roll-credit-factor", type=float, default=0.5, help="Min credit factor vs original (0..1)")
+    parser.add_argument("--roll-trigger-pct", type=float, default=0.0, help="Pct beyond short strike to auto-roll (0=at breach)")
+    parser.add_argument("--roll-dependent", type=str, default=None, help="JSON dict for dependent roll spread {expiration_date, primary_leg, secondary_leg, price}")
+    print("before")
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = build_args(argv)
+    print(args)
     settings = load_settings()
 
     now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") if args.submit_time is None else args.submit_time
@@ -59,7 +67,17 @@ def main(argv=None) -> int:
         "underlying_stop_loss": args.underlying_stop_loss,
         "exit_before_close": args.exit_before_close,
         "eod_minutes_before": args.eod_minutes_before,
+        "auto_roll_on_challenge": args.auto_roll_on_challenge,
+        "roll_short_strike_shift": args.roll_short_strike_shift,
+        "roll_keep_width": args.roll_keep_width,
+        "roll_credit_factor": args.roll_credit_factor,
+        "roll_trigger_pct": args.roll_trigger_pct,
     }
+    if args.roll_dependent:
+        try:
+            payload["roll_dependent"] = json.loads(args.roll_dependent)
+        except Exception:
+            print("Invalid --roll-dependent JSON; ignoring", file=sys.stderr)
 
     producer = Producer({"bootstrap.servers": settings.kafka.brokers})
 
