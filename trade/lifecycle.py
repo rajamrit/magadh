@@ -137,6 +137,87 @@ class TradeLifecycleManager:
                     logger.info(f"Would place exit order with legs={close_legs}")
                 except Exception as e:
                     logger.error(f"Exit placement failed for {order_id}: {e}")
+                # Auto roll if challenged and enabled
+                if reason == "roll_challenge" and event.position_effect == "credit" and event.auto_roll_on_challenge:
+                    try:
+                        shift = float(event.roll_short_strike_shift or 1.0)
+                        keep_width = bool(event.roll_keep_width)
+                        credit_factor = float(event.roll_credit_factor or 0.5)
+                        # If dependent roll is provided, use it directly
+                        dep = event.roll_dependent if isinstance(event.roll_dependent, dict) else None
+                        if dep:
+                            new_exp = str(dep.get("expiration_date", event.expiration_date))
+                            new_primary = dep.get("primary_leg", event.primary_leg)
+                            new_secondary = dep.get("secondary_leg", event.secondary_leg)
+                            new_price = float(dep.get("price", max(0.01, float(event.price) * credit_factor)))
+                        else:
+                            # Determine strikes from original
+                            short_leg = event.primary_leg if str(event.primary_leg.get("buy_sell")).lower() == "sell" else event.secondary_leg
+                            long_leg = event.secondary_leg if short_leg is event.primary_leg else event.primary_leg
+                            short_type = str(short_leg.get("option_type")).lower()
+                            short_strike = float(short_leg.get("strike_price"))
+                            long_strike = float(long_leg.get("strike_price"))
+                            width = abs(short_strike - long_strike)
+                            # roll away from price
+                            if short_type == "call":
+                                new_short = short_strike + shift
+                                new_long = new_short - width if keep_width else long_strike
+                            else:
+                                new_short = short_strike - shift
+                                new_long = new_short + width if keep_width else long_strike
+                            # Construct new legs: maintain buy/sell roles and types
+                            new_primary = dict(event.primary_leg)
+                            new_secondary = dict(event.secondary_leg)
+                            if str(event.primary_leg.get("buy_sell")).lower() == "sell":
+                                new_primary["strike_price"] = new_short
+                                new_secondary["strike_price"] = new_long
+                            else:
+                                new_secondary["strike_price"] = new_short
+                                new_primary["strike_price"] = new_long
+                            new_exp = event.expiration_date
+                            new_price = max(0.01, float(event.price) * credit_factor)
+                        msg = (
+                            f"🔁 Rolling Challenged Credit Spread\n"
+                            f"symbol={event.symbol} exp={new_exp}\n"
+                            f"target_credit={new_price} factor={credit_factor}"
+                        )
+                        try:
+                            PushoverMessageHandle.send_msg(msg=msg)
+                        except Exception:
+                            pass
+                        # Close existing
+                        try:
+                            self.rh.cancel_order(order_id)
+                        except Exception:
+                            pass
+                        # Place new credit spread
+                        new_event = RhDefinedVerticalEvent(
+                            symbol=event.symbol,
+                            position_effect="credit",
+                            submit_time=event.submit_time,
+                            price=new_price,
+                            expiration_date=new_exp,
+                            primary_leg=new_primary,
+                            secondary_leg=new_secondary,
+                            quantity=event.quantity,
+                            max_fill_seconds=event.max_fill_seconds,
+                            take_profit=event.take_profit,
+                            stop_loss=event.stop_loss,
+                            underlying_take_profit=event.underlying_take_profit,
+                            underlying_stop_loss=event.underlying_stop_loss,
+                            exit_before_close=event.exit_before_close,
+                            eod_minutes_before=event.eod_minutes_before,
+                            auto_roll_on_challenge=event.auto_roll_on_challenge,
+                            roll_short_strike_shift=event.roll_short_strike_shift,
+                            roll_keep_width=event.roll_keep_width,
+                            roll_credit_factor=event.roll_credit_factor,
+                            roll_trigger_pct=event.roll_trigger_pct,
+                            roll_dependent=event.roll_dependent,
+                        )
+                        # Reuse handle_defined_vertical for placement and tracking
+                        self.handle_defined_vertical(vars(new_event))
+                    except Exception as e:
+                        logger.error(f"Auto roll failed for {order_id}: {e}")
 
             short_leg = event.primary_leg if str(event.primary_leg.get("buy_sell")).lower() == "sell" else event.secondary_leg
             is_credit = (event.position_effect == "credit")
@@ -155,6 +236,7 @@ class TradeLifecycleManager:
                 short_leg_type=short_type,
                 short_leg_strike=short_strike,
                 expiration_date=event.expiration_date,
+                roll_trigger_pct=event.roll_trigger_pct,
             )
 
         # EOD exit handling
