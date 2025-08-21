@@ -4,6 +4,9 @@ from tpe_common.util.util import Util
 from magadh.config.settings import load_settings
 from magadh.kafka.async_consumer import AsyncKafkaConsumer
 from magadh.trade.async_lifecycle import AsyncTradeLifecycle
+import pytz
+from datetime import datetime
+import os
 
 
 logger = Util.get_logger("MagadhAsyncApp")
@@ -64,6 +67,28 @@ async def main_async() -> int:
     tasks = [asyncio.create_task(trade_loop())]
     if quote_consumer:
         tasks.append(asyncio.create_task(quote_loop()))
+
+    # EOD watchdog: stop after 13:30 PT; also don't start before 06:30 PT
+    enforce_hours = os.environ.get("MAGADH_ENFORCE_MARKET_HOURS", "1").lower() in {"1","true","yes","y"}
+    if enforce_hours:
+        async def watchdog():
+            tz = pytz.timezone("US/Pacific")
+            while True:
+                now = datetime.now(tz)
+                start_ok = now.hour > 6 or (now.hour == 6 and now.minute >= 30)
+                if not start_ok:
+                    logger.info("Pre-market window; pausing consumers...")
+                    await asyncio.sleep(30)
+                    continue
+                if now.hour > 13 or (now.hour == 13 and now.minute >= 30):
+                    logger.info("Past 13:30 PT - initiating shutdown")
+                    await trade_consumer.stop()
+                    if quote_consumer:
+                        await quote_consumer.stop()
+                    return
+                await asyncio.sleep(30)
+
+        tasks.append(asyncio.create_task(watchdog()))
 
     logger.info("Async consumers started")
     await asyncio.gather(*tasks)
