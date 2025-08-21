@@ -86,8 +86,22 @@ class PriceTracker:
                         ))
                     except Exception:
                         pass
-                    # update cooldown
                     cfg["_last_challenge_alert_ts"] = now_ts
+                    # Auto-roll trigger threshold beyond breach
+                    trigger_pct = float(cfg.get("roll_trigger_pct", 0.0) or 0.0)
+                    beyond = False
+                    if severity == "breach" and trigger_pct > 0.0:
+                        beyond_abs = float(short_strike) * trigger_pct / 100.0
+                        if short_type == "call":
+                            beyond = price >= float(short_strike) + beyond_abs
+                        else:
+                            beyond = price <= float(short_strike) - beyond_abs
+                    elif severity == "breach" and trigger_pct == 0.0:
+                        beyond = True
+                    if beyond:
+                        cb = cfg.get("callback")
+                        if cb:
+                            cb(order_id, reason="roll_challenge", price=price)
 
             # Underlying-based triggers
             if utp is not None and price >= utp:
