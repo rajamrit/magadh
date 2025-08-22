@@ -24,6 +24,52 @@ class TradeLifecycleManager:
         self.price_tracker = price_tracker or PriceTracker()
         self.price_tracker.set_targets_provider(lambda oid: self.store.get_targets(oid))
 
+    def _start_eod_guard(self, order_id: str, event: RhDefinedVerticalEvent):
+        if not getattr(event, 'exit_before_close', False):
+            return
+        def eod_thread():
+            try:
+                import pytz
+                from datetime import datetime, timedelta
+                pacific = pytz.timezone("US/Pacific")
+                now = datetime.now(pacific)
+                mkt_close = now.replace(hour=13, minute=0, second=0, microsecond=0)
+                if now > mkt_close:
+                    logger.info(f"EOD guard: past market close; skipping for {order_id}")
+                    return
+                exit_time = mkt_close - timedelta(minutes=event.eod_minutes_before)
+                sleep_sec = max(0, (exit_time - now).total_seconds())
+                if sleep_sec > 0:
+                    logger.info(f"EOD guard set for {order_id} at {exit_time.strftime('%H:%M:%S %Z')} (sleep {int(sleep_sec)}s)")
+                    time.sleep(sleep_sec)
+                # attempt market-ish exit: adjust around entry price if available
+                state_snapshot = self.store.load(order_id) or {}
+                entry_price = state_snapshot.get("price")
+                if entry_price is None:
+                    logger.info(f"EOD exit for {order_id}: unknown entry price; sending immediate exit request")
+                adj = 0.05
+                if event.position_effect == "debit" and entry_price is not None:
+                    exit_price = max(0.01, float(entry_price) - adj)
+                elif event.position_effect == "credit" and entry_price is not None:
+                    exit_price = float(entry_price) - adj
+                else:
+                    exit_price = None
+                try:
+                    close_legs = self._build_spread_legs(event, effect="close")
+                    logger.info(f"EOD exit attempt for {order_id} at {exit_price} legs={close_legs}")
+                    try:
+                        PushoverMessageHandle.send_msg(msg=(
+                            f"🏁 EOD Exit Attempt\norder={order_id} symbol={event.symbol} price={exit_price}"
+                        ))
+                    except Exception:
+                        pass
+                    # Place exit if possible (mock prints; real service would place spread close order)
+                except Exception as e:
+                    logger.error(f"EOD exit failed for {order_id}: {e}")
+            except Exception as e:
+                logger.error(f"EOD thread error for {order_id}: {e}")
+        threading.Thread(target=eod_thread, daemon=True).start()
+
     def resume_from_disk(self):
         now = time.time()
         total_states = 0
@@ -91,13 +137,8 @@ class TradeLifecycleManager:
                                 break
                         if isinstance(evt, Dict) and evt.get("exit_before_close"):
                             dummy = RhDefinedVerticalEvent(**evt)
-                            def bg():
-                                try:
-                                    close_legs = self._build_spread_legs(dummy, effect="close")
-                                    logger.info(f"Resume EOD guard for {order_id} legs={close_legs}")
-                                except Exception:
-                                    pass
-                            threading.Thread(target=bg, daemon=True).start()
+                            logger.info(f"Resume EOD guard for {order_id}")
+                            self._start_eod_guard(order_id, dummy)
                     except Exception:
                         pass
             except Exception as e:
@@ -280,58 +321,7 @@ class TradeLifecycleManager:
 
         # EOD exit handling
         if event.exit_before_close:
-            def eod_thread():
-                try:
-                    import pytz
-                    from datetime import datetime, timedelta
-                    pacific = pytz.timezone("US/Pacific")
-                    now = datetime.now(pacific)
-                    mkt_close = now.replace(hour=13, minute=0, second=0, microsecond=0)
-                    # if already past today's close, skip
-                    if now > mkt_close:
-                        return
-                    exit_time = mkt_close - timedelta(minutes=event.eod_minutes_before)
-                    try:
-                        PushoverMessageHandle.send_msg(msg=(
-                            f"🕛 Scheduled EOD Exit\norder={order_id} symbol={event.symbol} at={exit_time.strftime('%H:%M:%S %Z')}"
-                        ))
-                    except Exception:
-                        pass
-                    # sleep until exit_time
-                    sleep_sec = max(0, (exit_time - now).total_seconds())
-                    time.sleep(sleep_sec)
-                    # attempt market-ish exit: for debit, raise price slightly; for credit, lower price slightly
-                    state_snapshot = self.store.load(order_id) or {}
-                    entry_price = state_snapshot.get("price")
-                    if entry_price is None:
-                        entry_price = details.get("price") if isinstance(details, Dict) else None
-                    if entry_price is None:
-                        logger.info(f"EOD exit for {order_id}: unknown entry price; sending immediate exit request")
-                    adj = 0.05  # 5c adjustment heuristic
-                    if event.position_effect == "debit" and entry_price is not None:
-                        exit_price = max(0.01, float(entry_price) - adj)
-                    elif event.position_effect == "credit" and entry_price is not None:
-                        exit_price = float(entry_price) - adj  # accept smaller credit to exit
-                    else:
-                        exit_price = None
-                    try:
-                        close_legs = self._build_spread_legs(event, effect="close")
-                        logger.info(f"EOD exit attempt for {order_id} at {exit_price} legs={close_legs}")
-                        try:
-                            PushoverMessageHandle.send_msg(msg=(
-                                f"🏁 EOD Exit Attempt\norder={order_id} symbol={event.symbol} price={exit_price}"
-                            ))
-                        except Exception:
-                            pass
-                        # Place exit if possible (mock prints; real service would place spread close order)
-                        # result = self.rh.order_vertical_spread(direction=event.position_effect, symbol=event.symbol, price=exit_price or 0.01, legs=close_legs, quantity=state_snapshot.get("quantity", 1), time_in_force="gfd")
-                        # self.store.record_fill(order_id, kind="exit", details=result)
-                    except Exception as e:
-                        logger.error(f"EOD exit failed for {order_id}: {e}")
-                except Exception as e:
-                    logger.error(f"EOD thread error for {order_id}: {e}")
-            t2 = threading.Thread(target=eod_thread, daemon=True)
-            t2.start()
+            self._start_eod_guard(order_id, event)
 
     def handle_defined_vertical(self, payload: Dict):
         event = RhDefinedVerticalEvent(**payload) if not isinstance(payload, RhDefinedVerticalEvent) else payload
