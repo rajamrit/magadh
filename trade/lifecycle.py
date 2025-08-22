@@ -26,58 +26,97 @@ class TradeLifecycleManager:
 
     def resume_from_disk(self):
         now = time.time()
+        total_states = 0
+        resumed_open = 0
+        cancelled_timeout = 0
+        submitted_kept = 0
+        errors = 0
+        resumed_details: List[Dict] = []
         for path, state in self.store.iter_states():
-            order_id = state.get("order_id") or os.path.splitext(os.path.basename(path))[0]
-            status = self.store.get_status(state)
-            # Cancel timed-out entries
-            created_ts = self.store.get_created_submit_time(state)
-            max_wait = None
+            total_states += 1
             try:
-                # If original event saved in history, read max_fill_seconds
-                for h in state.get("history", []):
-                    if h.get("type") == "created":
-                        evt = h.get("payload", {}).get("event", {})
-                        max_wait = evt.get("max_fill_seconds")
-                        break
-            except Exception:
-                pass
-            if status in {"submitted"} and max_wait is not None and created_ts is not None:
-                if now - float(created_ts) > float(max_wait):
-                    try:
-                        self.rh.cancel_order(order_id)
-                        self.store.record_cancel(order_id, reason="resume_timeout")
-                        continue
-                    except Exception:
-                        pass
-            # Re-register targets and EOD exits for open trades
-            if status in {"open"}:
-                t = state.get("targets", {})
+                order_id = state.get("order_id") or os.path.splitext(os.path.basename(path))[0]
+                status = self.store.get_status(state)
                 symbol = state.get("symbol")
-                self.price_tracker.watch_order(
-                    order_id=order_id,
-                    symbol=symbol,
-                    take_profit=t.get("take_profit"),
-                    stop_loss=t.get("stop_loss"),
-                    callback=lambda oid, reason, price: logger.info(f"Exit trigger for {oid}: {reason} @ {price}")
-                )
-                # Rebuild event-like structure for EOD
+                # Cancel timed-out entries
+                created_ts = self.store.get_created_submit_time(state)
+                max_wait = None
                 try:
-                    evt = None
+                    # If original event saved in history, read max_fill_seconds
                     for h in state.get("history", []):
                         if h.get("type") == "created":
-                            evt = h.get("payload", {}).get("event")
+                            evt = h.get("payload", {}).get("event", {})
+                            max_wait = evt.get("max_fill_seconds")
                             break
-                    if isinstance(evt, dict) and evt.get("exit_before_close"):
-                        dummy = RhDefinedVerticalEvent(**evt)
-                        def bg():
-                            try:
-                                close_legs = self._build_spread_legs(dummy, effect="close")
-                                logger.info(f"Resume EOD guard for {order_id} legs={close_legs}")
-                            except Exception:
-                                pass
-                        threading.Thread(target=bg, daemon=True).start()
                 except Exception:
                     pass
+                if status in {"submitted"} and max_wait is not None and created_ts is not None:
+                    if now - float(created_ts) > float(max_wait):
+                        try:
+                            self.rh.cancel_order(order_id)
+                            self.store.record_cancel(order_id, reason="resume_timeout")
+                            cancelled_timeout += 1
+                            logger.info(f"Cancelled timed-out submitted order on resume order={order_id} symbol={symbol}")
+                            continue
+                        except Exception:
+                            pass
+                    else:
+                        submitted_kept += 1
+                # Re-register targets and EOD exits for open trades
+                if status in {"open"}:
+                    t = state.get("targets", {})
+                    symbol = state.get("symbol")
+                    self.price_tracker.watch_order(
+                        order_id=order_id,
+                        symbol=symbol,
+                        take_profit=t.get("take_profit"),
+                        stop_loss=t.get("stop_loss"),
+                        callback=lambda oid, reason, price: logger.info(f"Exit trigger for {oid}: {reason} @ {price}")
+                    )
+                    resumed_open += 1
+                    resumed_details.append({
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "status": status,
+                        "take_profit": t.get("take_profit"),
+                        "stop_loss": t.get("stop_loss"),
+                    })
+                    logger.info(f"Resumed open trade order={order_id} symbol={symbol} tp={t.get('take_profit')} sl={t.get('stop_loss')}")
+                    # Rebuild event-like structure for EOD
+                    try:
+                        evt = None
+                        for h in state.get("history", []):
+                            if h.get("type") == "created":
+                                evt = h.get("payload", {}).get("event")
+                                break
+                        if isinstance(evt, Dict) and evt.get("exit_before_close"):
+                            dummy = RhDefinedVerticalEvent(**evt)
+                            def bg():
+                                try:
+                                    close_legs = self._build_spread_legs(dummy, effect="close")
+                                    logger.info(f"Resume EOD guard for {order_id} legs={close_legs}")
+                                except Exception:
+                                    pass
+                            threading.Thread(target=bg, daemon=True).start()
+                    except Exception:
+                        pass
+            except Exception as e:
+                errors += 1
+                logger.error(f"Resume error for path={path}: {e}")
+                continue
+        logger.info(
+            f"Resume complete: total_states={total_states} resumed_open={resumed_open} "
+            f"submitted_kept={submitted_kept} cancelled_timeout={cancelled_timeout} errors={errors}"
+        )
+        if resumed_details:
+            try:
+                for d in resumed_details:
+                    logger.info(
+                        f"Reloaded: order={d['order_id']} symbol={d['symbol']} status={d['status']} "
+                        f"tp={d['take_profit']} sl={d['stop_loss']}"
+                    )
+            except Exception:
+                pass
 
     @staticmethod
     def _build_spread_legs(event: RhDefinedVerticalEvent, effect: str = "open") -> List[Dict]:
@@ -265,7 +304,7 @@ class TradeLifecycleManager:
                     state_snapshot = self.store.load(order_id) or {}
                     entry_price = state_snapshot.get("price")
                     if entry_price is None:
-                        entry_price = details.get("price") if isinstance(details, dict) else None
+                        entry_price = details.get("price") if isinstance(details, Dict) else None
                     if entry_price is None:
                         logger.info(f"EOD exit for {order_id}: unknown entry price; sending immediate exit request")
                     adj = 0.05  # 5c adjustment heuristic
@@ -346,7 +385,7 @@ class TradeLifecycleManager:
         # monitor asynchronously
         t = threading.Thread(target=self._monitor_fill_and_targets, args=(event, order_id), daemon=True)
         t.start()
-        return result 
+        return result
 
     def eod_exit_all(self):
         try:
