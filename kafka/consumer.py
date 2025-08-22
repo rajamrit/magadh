@@ -46,27 +46,36 @@ class KafkaConsumerWrapper:
                     logger.error(f"Kafka error: {msg.error()}")
                     continue
                 try:
+                    # Always log receipt before decoding
+                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+                        try:
+                            logger.info(f"Polled msg topic={msg.topic()} partition={msg.partition()} offset={msg.offset()}")
+                        except Exception:
+                            logger.info("Polled msg")
+
                     payload = msg.value()
+                    data = None
                     try:
                         data = json.loads(payload)
-                    except Exception:
+                    except Exception as je:
+                        logger.debug(f"JSON decode failed: {je}")
                         # Fallback for pickled payloads (legacy)
-                        import pickle
-                        obj = pickle.loads(payload)
                         try:
-                            data = dict(obj)  # if it behaves like a mapping
-                        except Exception:
-                            data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                            import pickle
+                            obj = pickle.loads(payload)
+                            try:
+                                data = dict(obj)  # if it behaves like a mapping
+                            except Exception:
+                                data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                        except Exception as pe:
+                            logger.debug(f"Pickle decode failed: {pe}")
+                            # Pass raw bytes as last resort so handler can still run
+                            data = {"__raw": payload}
                     # Inject topic for downstream handlers/metrics
                     try:
                         data["__topic"] = msg.topic()
                     except Exception:
                         pass
-                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
-                        try:
-                            logger.info(f"Received msg topic={msg.topic()} partition={msg.partition()} offset={msg.offset()}")
-                        except Exception:
-                            logger.info("Received msg")
                     handler(data)
                 except Exception as e:
                     logger.error(f"Failed to handle message: {e}")

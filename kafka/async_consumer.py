@@ -61,26 +61,32 @@ class AsyncKafkaConsumer(ConsumerRebalanceListener):
         try:
             async for msg in self._consumer:  # type: ignore
                 try:
+                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+                        try:
+                            logger.info(f"Polled msg topic={msg.topic} partition={msg.partition} offset={msg.offset}")
+                        except Exception:
+                            logger.info("Polled msg")
                     value = msg.value
+                    data = None
                     try:
                         data = json.loads(value)
-                    except Exception:
-                        import pickle
-                        obj = pickle.loads(value)
+                    except Exception as je:
+                        logger.debug(f"JSON decode failed: {je}")
                         try:
-                            data = dict(obj)
-                        except Exception:
-                            data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                            import pickle
+                            obj = pickle.loads(value)
+                            try:
+                                data = dict(obj)
+                            except Exception:
+                                data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                        except Exception as pe:
+                            logger.debug(f"Pickle decode failed: {pe}")
+                            data = {"__raw": value}
                     # Inject topic for downstream handlers/metrics
                     try:
                         data["__topic"] = msg.topic
                     except Exception:
                         pass
-                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
-                        try:
-                            logger.info(f"Received msg topic={msg.topic} partition={msg.partition} offset={msg.offset}")
-                        except Exception:
-                            logger.info("Received msg")
                     await handler(data)
                 except Exception:
                     continue
