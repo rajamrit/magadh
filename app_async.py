@@ -7,6 +7,7 @@ from magadh.trade.async_lifecycle import AsyncTradeLifecycle
 import pytz
 from datetime import datetime
 import os
+from trading_platform_experimentation.platform_common.service.stats_collector import StatsCollector
 
 
 logger = Util.get_logger("MagadhAsyncApp")
@@ -14,6 +15,8 @@ logger = Util.get_logger("MagadhAsyncApp")
 
 async def main_async() -> int:
     settings = load_settings()
+    stats = StatsCollector("magadh_health_async")
+    stats.start()
     lifecycle = AsyncTradeLifecycle(settings=settings)
 
     # Resume on startup (reuse sync logic by importing TradeStateStore via lifecycle)
@@ -52,6 +55,11 @@ async def main_async() -> int:
 
     async def handle_quote(payload: dict):
         lifecycle.price_tracker.update_quote(payload)
+        topic = payload.get("__topic")
+        if topic == settings.kafka.quotes_minute_topic:
+            stats.incr_counter("quotes_minute_count", 1)
+        elif topic == settings.kafka.quotes_second_topic:
+            stats.incr_counter("quotes_second_count", 1)
 
     await trade_consumer.start()
     if quote_consumer:

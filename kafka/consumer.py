@@ -51,6 +51,11 @@ class KafkaConsumerWrapper:
                             data = dict(obj)  # if it behaves like a mapping
                         except Exception:
                             data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                    # Inject topic for downstream handlers/metrics
+                    try:
+                        data["__topic"] = msg.topic()
+                    except Exception:
+                        pass
                     handler(data)
                 except Exception as e:
                     print(f"Failed to handle message: {e}")

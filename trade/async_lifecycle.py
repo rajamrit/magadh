@@ -74,8 +74,25 @@ class AsyncTradeLifecycle:
             if event.max_fill_seconds is not None and time.time() > deadline:
                 logger.info(f"Order {order_id} timed out waiting for fill. Cancelling...")
                 try:
-                    self.rh.cancel_order(order_id)
-                    self.store.record_cancel(order_id, reason="entry_timeout")
+                    cancel_ok = self.rh.cancel_order(order_id)
+                    if cancel_ok:
+                        self.store.record_cancel(order_id, reason="entry_timeout_cancelled")
+                        return
+                    # verify cancel with polling
+                    verify_timeout = float(os.environ.get("MAGADH_CANCEL_VERIFY_TIMEOUT_SEC", "10"))
+                    verify_poll = float(os.environ.get("MAGADH_CANCEL_VERIFY_POLL_SEC", "1.0"))
+                    t_end = time.time() + verify_timeout
+                    while time.time() < t_end:
+                        d = self.rh.get_order_details(order_id)
+                        st = d.get("state") if isinstance(d, dict) else None
+                        qty = d.get("quantity") if isinstance(d, dict) else None
+                        cqty = d.get("canceled_quantity") if isinstance(d, dict) else None
+                        if st == "cancelled" and (qty is None or qty == cqty):
+                            self.store.record_cancel(order_id, reason="entry_timeout_cancelled")
+                            return
+                        await asyncio.sleep(verify_poll)
+                    logger.warning(f"Cancel unconfirmed for {order_id} after timeout; marking as cancelled (best-effort)")
+                    self.store.record_cancel(order_id, reason="entry_timeout_cancel_unconfirmed")
                 except Exception as e:
                     logger.error(f"Cancel failed for {order_id}: {e}")
                 return

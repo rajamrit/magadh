@@ -5,6 +5,7 @@ from tpe_common.util.util import Util
 from magadh.config.settings import load_settings
 from magadh.kafka.consumer import KafkaConsumerWrapper
 from magadh.trade.lifecycle import TradeLifecycleManager
+from trading_platform_experimentation.platform_common.service.stats_collector import StatsCollector
 
 
 logger = Util.get_logger("MagadhApp")
@@ -12,6 +13,8 @@ logger = Util.get_logger("MagadhApp")
 
 def main():
     settings = load_settings()
+    stats = StatsCollector("magadh_health")
+    stats.start()
     try:
         lifecycle = TradeLifecycleManager(settings=settings)
     except ModuleNotFoundError as e:
@@ -37,6 +40,11 @@ def main():
 
         def handle_quote(payload):
             lifecycle.price_tracker.update_quote(payload)
+            topic = payload.get("__topic")
+            if topic == settings.kafka.quotes_minute_topic:
+                stats.incr_counter("quotes_minute_count", 1)
+            elif topic == settings.kafka.quotes_second_topic:
+                stats.incr_counter("quotes_second_count", 1)
 
         th = threading.Thread(target=quote_consumer.poll_forever, args=(handle_quote,), daemon=True)
         th.start()
