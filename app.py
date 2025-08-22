@@ -1,5 +1,6 @@
 import sys
 import threading
+import os
 from tpe_common.util.util import Util
 
 from magadh.config.settings import load_settings
@@ -34,13 +35,19 @@ def main():
         topics.append(settings.kafka.quotes_minute_topic)
     if settings.kafka.quotes_second_topic:
         topics.append(settings.kafka.quotes_second_topic)
+    logger.info(f"Configured quote topics: {topics}")
 
     if topics:
         quote_consumer = KafkaConsumerWrapper(settings.kafka, topics=topics, seek_latest_on_assign=True)
 
         def handle_quote(payload):
-            lifecycle.price_tracker.update_quote(payload)
             topic = payload.get("__topic")
+            if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+                try:
+                    logger.info(f"Quote message from topic={topic} keys={list(payload.keys())}")
+                except Exception:
+                    logger.info(f"Quote message from topic={topic}")
+            lifecycle.price_tracker.update_quote(payload)
             if topic == settings.kafka.quotes_minute_topic:
                 stats.incr_counter("quotes_minute_count", 1)
             elif topic == settings.kafka.quotes_second_topic:

@@ -4,6 +4,10 @@ from typing import Callable, List
 from confluent_kafka import Consumer, TopicPartition
 
 from magadh.config.settings import KafkaSettings
+from tpe_common.util.util import Util
+import os
+
+logger = Util.get_logger("KafkaConsumerWrapper")
 
 
 class KafkaConsumerWrapper:
@@ -17,6 +21,7 @@ class KafkaConsumerWrapper:
         self.seek_latest_on_assign = seek_latest_on_assign
         self.topics = topics if topics else [settings.topic]
         self.consumer.subscribe(self.topics, on_assign=self._on_assign)
+        logger.info(f"Subscribed topics: {self.topics}")
 
     def _on_assign(self, consumer: Consumer, partitions: List[TopicPartition]):
         if self.seek_latest_on_assign:
@@ -26,8 +31,10 @@ class KafkaConsumerWrapper:
                 p.offset = high
                 new_parts.append(p)
             consumer.assign(new_parts)
+            logger.info(f"Assigned partitions (seek to end): {[str(p) for p in new_parts]}")
         else:
             consumer.assign(partitions)
+            logger.info(f"Assigned partitions: {[str(p) for p in partitions]}")
 
     def poll_forever(self, handler: Callable[[dict], None]):
         try:
@@ -36,8 +43,7 @@ class KafkaConsumerWrapper:
                 if msg is None:
                     continue
                 if msg.error():
-                    # log and continue
-                    print(f"Kafka error: {msg.error()}")
+                    logger.error(f"Kafka error: {msg.error()}")
                     continue
                 try:
                     payload = msg.value()
@@ -56,8 +62,13 @@ class KafkaConsumerWrapper:
                         data["__topic"] = msg.topic()
                     except Exception:
                         pass
+                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+                        try:
+                            logger.info(f"Received msg topic={msg.topic()} partition={msg.partition()} offset={msg.offset()}")
+                        except Exception:
+                            logger.info("Received msg")
                     handler(data)
                 except Exception as e:
-                    print(f"Failed to handle message: {e}")
+                    logger.error(f"Failed to handle message: {e}")
         finally:
             self.consumer.close() 

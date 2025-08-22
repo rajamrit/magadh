@@ -6,6 +6,10 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.abc import ConsumerRebalanceListener
 
 from magadh.config.settings import KafkaSettings
+from tpe_common.util.util import Util
+import os
+
+logger = Util.get_logger("AsyncKafkaConsumer")
 
 
 class AsyncKafkaConsumer(ConsumerRebalanceListener):
@@ -35,6 +39,7 @@ class AsyncKafkaConsumer(ConsumerRebalanceListener):
         # subscribe with rebalance listener (self)
         self._consumer.subscribe(self.topics, listener=self)
         await self._consumer.start()
+        logger.info(f"Async consumer started for topics: {self.topics}")
 
     # Rebalance listener interface
     async def on_partitions_revoked(self, revoked: Iterable[TopicPartition]):
@@ -44,6 +49,7 @@ class AsyncKafkaConsumer(ConsumerRebalanceListener):
     async def on_partitions_assigned(self, assigned: Iterable[TopicPartition]):
         if self.seek_latest_on_assign:
             await self._seek_to_end(assigned)
+        logger.info(f"Assigned partitions: {[str(tp) for tp in assigned]}")
 
     async def stop(self):
         if self._consumer:
@@ -70,6 +76,11 @@ class AsyncKafkaConsumer(ConsumerRebalanceListener):
                         data["__topic"] = msg.topic
                     except Exception:
                         pass
+                    if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+                        try:
+                            logger.info(f"Received msg topic={msg.topic} partition={msg.partition} offset={msg.offset}")
+                        except Exception:
+                            logger.info("Received msg")
                     await handler(data)
                 except Exception:
                     continue

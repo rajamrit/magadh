@@ -54,6 +54,12 @@ async def main_async() -> int:
     quote_consumer = AsyncKafkaConsumer(settings.kafka, topics=quote_topics, seek_latest_on_assign=True) if quote_topics else None
 
     async def handle_quote(payload: dict):
+        topic = payload.get("__topic")
+        if os.environ.get("MAGADH_DEBUG_QUOTES", "0").lower() in {"1","true","yes","y"}:
+            try:
+                logger.info(f"[async] Quote message from topic={topic} keys={list(payload.keys())}")
+            except Exception:
+                logger.info(f"[async] Quote message from topic={topic}")
         lifecycle.price_tracker.update_quote(payload)
         topic = payload.get("__topic")
         if topic == settings.kafka.quotes_minute_topic:
