@@ -181,12 +181,17 @@ class TradeLifecycleManager:
     def _build_spread_legs(event: RhDefinedVerticalEvent, effect: str = "open") -> List[Dict]:
         legs: List[Dict] = []
         for leg in (event.primary_leg, event.secondary_leg):
+            original_action = str(leg.get("buy_sell")).lower()
+            if effect == "close":
+                action = "buy" if original_action == "sell" else "sell"
+            else:
+                action = original_action
             legs.append({
                 "expirationDate": event.expiration_date,
                 "strike": str(leg["strike_price"]),
-                "optionType": leg["option_type"].lower(),
+                "optionType": str(leg["option_type"]).lower(),
                 "effect": effect,
-                "action": leg["buy_sell"].lower(),
+                "action": action,
                 "ratio_quantity": 1,
             })
         return legs
