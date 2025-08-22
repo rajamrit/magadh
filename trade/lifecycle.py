@@ -54,16 +54,34 @@ class TradeLifecycleManager:
                     exit_price = float(entry_price) - adj
                 else:
                     exit_price = None
+                # Round to 2 decimals for broker compatibility
+                if exit_price is None:
+                    exit_price_rounded = 0.01
+                else:
+                    exit_price_rounded = max(0.01, round(float(exit_price) + 1e-8, 2))
                 try:
                     close_legs = self._build_spread_legs(event, effect="close")
-                    logger.info(f"EOD exit attempt for {order_id} at {exit_price} legs={close_legs}")
+                    logger.info(f"EOD exit attempt for {order_id} at {exit_price_rounded} legs={close_legs}")
                     try:
                         PushoverMessageHandle.send_msg(msg=(
-                            f"🏁 EOD Exit Attempt\norder={order_id} symbol={event.symbol} price={exit_price}"
+                            f"🏁 EOD Exit Attempt\norder={order_id} symbol={event.symbol} price={exit_price_rounded}"
                         ))
                     except Exception:
                         pass
-                    # Place exit if possible (mock prints; real service would place spread close order)
+                    # Place exit order
+                    try:
+                        qty = (self.store.load(order_id) or {}).get("quantity", 1)
+                        result = self.rh.order_vertical_spread(
+                            direction=event.position_effect,
+                            symbol=event.symbol,
+                            price=exit_price_rounded,
+                            legs=close_legs,
+                            quantity=qty,
+                            time_in_force="gfd",
+                        )
+                        logger.info(f"EOD exit order placed for {order_id}: {result}")
+                    except Exception as pe:
+                        logger.error(f"EOD place exit failed for {order_id}: {pe}")
                 except Exception as e:
                     logger.error(f"EOD exit failed for {order_id}: {e}")
             except Exception as e:
@@ -432,10 +450,11 @@ class TradeLifecycleManager:
                             except Exception:
                                 pass
                             try:
+                                price_rounded = max(0.01, round(float(price) + 1e-8, 2))
                                 result = self.rh.order_vertical_spread(
                                     direction=evt.position_effect,
                                     symbol=evt.symbol,
-                                    price=price,
+                                    price=price_rounded,
                                     legs=close_legs,
                                     quantity=state.get("quantity", 1),
                                     time_in_force="gfd",
