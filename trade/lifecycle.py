@@ -135,6 +135,8 @@ class TradeLifecycleManager:
                         symbol=symbol,
                         take_profit=t.get("take_profit"),
                         stop_loss=t.get("stop_loss"),
+                        underlying_take_profit=t.get("underlying_take_profit"),
+                        underlying_stop_loss=t.get("underlying_stop_loss"),
                         callback=lambda oid, reason, price: logger.info(f"Exit trigger for {oid}: {reason} @ {price}")
                     )
                     resumed_open += 1

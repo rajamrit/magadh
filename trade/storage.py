@@ -121,6 +121,8 @@ class TradeStateStore:
             "targets": {
                 "take_profit": targets.get("take_profit"),
                 "stop_loss": targets.get("stop_loss"),
+                "underlying_take_profit": targets.get("underlying_take_profit"),
+                "underlying_stop_loss": targets.get("underlying_stop_loss"),
             },
             "history": [
                 {"ts": now_epoch, "ts_iso": now_iso, "type": "created", "payload": {"event": event}},
@@ -159,13 +161,18 @@ class TradeStateStore:
             self._log_append(order_id, f"{now_iso} FILLED exit")
         self._write(order_id, state)
 
-    def update_targets(self, order_id: str, *, take_profit: Optional[float], stop_loss: Optional[float]) -> None:
+    def update_targets(self, order_id: str, *, take_profit: Optional[float], stop_loss: Optional[float],
+                       underlying_take_profit: Optional[float] = None, underlying_stop_loss: Optional[float] = None) -> None:
         state = self.load(order_id) or {}
         targets = state.setdefault("targets", {})
         if take_profit is not None:
             targets["take_profit"] = take_profit
         if stop_loss is not None:
             targets["stop_loss"] = stop_loss
+        if underlying_take_profit is not None:
+            targets["underlying_take_profit"] = underlying_take_profit
+        if underlying_stop_loss is not None:
+            targets["underlying_stop_loss"] = underlying_stop_loss
         hist = state.setdefault("history", [])
         now_epoch = time.time()
         now_iso = self._now_iso_pacific()
@@ -173,15 +180,19 @@ class TradeStateStore:
             "ts": now_epoch,
             "ts_iso": now_iso,
             "type": "targets_updated",
-            "payload": {"take_profit": take_profit, "stop_loss": stop_loss}
+            "payload": {"take_profit": take_profit, "stop_loss": stop_loss,
+                        "underlying_take_profit": underlying_take_profit,
+                        "underlying_stop_loss": underlying_stop_loss}
         })
         self._write(order_id, state)
-        self._log_append(order_id, f"{now_iso} TARGETS_UPDATED tp={take_profit} sl={stop_loss}")
+        self._log_append(order_id, f"{now_iso} TARGETS_UPDATED tp={take_profit} sl={stop_loss} utp={underlying_take_profit} usl={underlying_stop_loss}")
 
     def get_targets(self, order_id: str) -> Dict[str, Optional[float]]:
         state = self.load(order_id) or {}
         t = state.get("targets", {})
-        return {"take_profit": t.get("take_profit"), "stop_loss": t.get("stop_loss")}
+        return {"take_profit": t.get("take_profit"), "stop_loss": t.get("stop_loss"),
+                "underlying_take_profit": t.get("underlying_take_profit"),
+                "underlying_stop_loss": t.get("underlying_stop_loss")}
 
     def record_cancel(self, order_id: str, reason: str | None = None) -> None:
         state = self.load(order_id) or {}
