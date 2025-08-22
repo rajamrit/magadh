@@ -6,6 +6,7 @@ from confluent_kafka import Consumer, TopicPartition
 from magadh.config.settings import KafkaSettings
 from tpe_common.util.util import Util
 import os
+import ast
 
 logger = Util.get_logger("KafkaConsumerWrapper")
 
@@ -55,22 +56,38 @@ class KafkaConsumerWrapper:
 
                     payload = msg.value()
                     data = None
+
+                    # 1) Try python-literal dicts (single-quoted) via ast.literal_eval
                     try:
-                        data = json.loads(payload)
-                    except Exception as je:
-                        logger.debug(f"JSON decode failed: {je}")
-                        # Fallback for pickled payloads (legacy)
+                        s = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload)
+                        obj = ast.literal_eval(s)
+                        if isinstance(obj, dict):
+                            data = obj
+                        else:
+                            data = {"payload": obj}
+                    except Exception as le:
+                        # 2) Try JSON
                         try:
-                            import pickle
-                            obj = pickle.loads(payload)
+                            data = json.loads(payload)
+                        except Exception as je:
+                            # 3) Try pickle
                             try:
-                                data = dict(obj)  # if it behaves like a mapping
-                            except Exception:
-                                data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
-                        except Exception as pe:
-                            logger.debug(f"Pickle decode failed: {pe}")
-                            # Pass raw bytes as last resort so handler can still run
-                            data = {"__raw": payload}
+                                import pickle
+                                obj = pickle.loads(payload)
+                                try:
+                                    data = dict(obj)
+                                except Exception:
+                                    data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                            except Exception as pe:
+                                # All decoders failed
+                                preview = None
+                                try:
+                                    preview = (payload[:200] if isinstance(payload, (bytes, bytearray)) else str(payload)[:200])
+                                except Exception:
+                                    preview = "<unavailable>"
+                                logger.error(f"Failed to decode Kafka message (ast/json/pickle). Error ast={le}, json={je}, pickle={pe}, preview={preview}")
+                                data = {"__raw": payload, "__decode_failed": True}
+
                     # Inject topic for downstream handlers/metrics
                     try:
                         data["__topic"] = msg.topic()

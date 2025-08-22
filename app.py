@@ -47,6 +47,9 @@ def main():
                     logger.info(f"Quote message from topic={topic} keys={list(payload.keys())}")
                 except Exception:
                     logger.info(f"Quote message from topic={topic}")
+            # Count decode failures
+            if payload.get("__decode_failed") is True:
+                stats.incr_counter("quotes_decode_failed", 1)
             lifecycle.price_tracker.update_quote(payload)
             if topic == settings.kafka.quotes_minute_topic:
                 stats.incr_counter("quotes_minute_count", 1)

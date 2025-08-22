@@ -8,6 +8,7 @@ from aiokafka.abc import ConsumerRebalanceListener
 from magadh.config.settings import KafkaSettings
 from tpe_common.util.util import Util
 import os
+import ast
 
 logger = Util.get_logger("AsyncKafkaConsumer")
 
@@ -68,27 +69,45 @@ class AsyncKafkaConsumer(ConsumerRebalanceListener):
                             logger.info("Polled msg")
                     value = msg.value
                     data = None
+
+                    # 1) Try python-literal dicts via ast.literal_eval
                     try:
-                        data = json.loads(value)
-                    except Exception as je:
-                        logger.debug(f"JSON decode failed: {je}")
+                        s = value.decode('utf-8') if isinstance(value, (bytes, bytearray)) else str(value)
+                        obj = ast.literal_eval(s)
+                        if isinstance(obj, dict):
+                            data = obj
+                        else:
+                            data = {"payload": obj}
+                    except Exception as le:
+                        # 2) Try JSON
                         try:
-                            import pickle
-                            obj = pickle.loads(value)
+                            data = json.loads(value)
+                        except Exception as je:
+                            # 3) Try pickle
                             try:
-                                data = dict(obj)
-                            except Exception:
-                                data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
-                        except Exception as pe:
-                            logger.debug(f"Pickle decode failed: {pe}")
-                            data = {"__raw": value}
+                                import pickle
+                                obj = pickle.loads(value)
+                                try:
+                                    data = dict(obj)
+                                except Exception:
+                                    data = vars(obj) if hasattr(obj, "__dict__") else {"payload": obj}
+                            except Exception as pe:
+                                preview = None
+                                try:
+                                    preview = (value[:200] if isinstance(value, (bytes, bytearray)) else str(value)[:200])
+                                except Exception:
+                                    preview = "<unavailable>"
+                                logger.error(f"Failed to decode Kafka message (ast/json/pickle). Error ast={le}, json={je}, pickle={pe}, preview={preview}")
+                                data = {"__raw": value, "__decode_failed": True}
+
                     # Inject topic for downstream handlers/metrics
                     try:
                         data["__topic"] = msg.topic
                     except Exception:
                         pass
                     await handler(data)
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Failed to handle message: {e}")
                     continue
         finally:
             await self.stop() 
